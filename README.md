@@ -1,6 +1,6 @@
-## Intro
+## Ordered, Exclusive, Easy
 
-There are lots of instances in which you want to insure that a series of executions have the properties of:
+Ensure that a series of executions have the properties of:
 
 1.  Exclusivity: One at a time execution
 2.  Order: Execution happens in first in, first out (FIFO) order
@@ -24,7 +24,7 @@ will add ```func(){...}``` to an ordered queue (first in, first out (FIFO)) to b
 
 ### Comparison to sync.Mutex
 
-```sync.Mutex``` guarantees exclusivity, but not order.  For this reason it is often used synchronously to insure ordering.
+```sync.Mutex``` guarantees exclusivity, but not order.  For this reason it is often used synchronously to ensure ordering.
 ```serialize.Executor``` guarantees both exclusivity and order, allowing asynchronous use.
 
 ## Uses
