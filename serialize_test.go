@@ -22,9 +22,30 @@ package serialize_test
 
 import (
 	"testing"
+	"time"
 
 	"github.com/edwarnicke/serialize"
 )
+
+func TestNestedAsyncExec(t *testing.T) {
+	var exec serialize.Executor
+
+	exec.AsyncExec(func() {
+		time.Sleep(time.Millisecond * 50)
+		exec.AsyncExec(func() {
+			time.Sleep(time.Millisecond * 50)
+			exec.AsyncExec(func() {
+				time.Sleep(time.Millisecond * 50)
+			})
+		})
+	})
+
+	for i := 0; i < 1e3; i++ {
+		exec.AsyncExec(func() {})
+	}
+
+	<-exec.AsyncExec(func() {})
+}
 
 func TestASyncExec(t *testing.T) {
 	exec := serialize.Executor{}
@@ -32,7 +53,7 @@ func TestASyncExec(t *testing.T) {
 	completion0 := make(chan struct{})
 	exec.AsyncExec(func() {
 		if count != 0 {
-			t.Errorf("expected count == 0, actual %d", count)
+			t.Errorf("expected ticket == 0, actual %d", count)
 		}
 		count = 1
 		close(completion0)
@@ -50,7 +71,7 @@ func TestSyncExec(t *testing.T) {
 	completion0 := make(chan struct{})
 	<-exec.AsyncExec(func() {
 		if count != 0 {
-			t.Errorf("expected count == 0, actual %d", count)
+			t.Errorf("expected ticket == 0, actual %d", count)
 		}
 		count = 1
 		close(completion0)
@@ -70,7 +91,7 @@ func TestExecOrder1(t *testing.T) {
 	exec.AsyncExec(func() {
 		<-trigger0
 		if count != 0 {
-			t.Errorf("expected count == 0, actual %d", count)
+			t.Errorf("expected ticket == 0, actual %d", count)
 		}
 		count = 1
 		close(completion0)
@@ -80,7 +101,7 @@ func TestExecOrder1(t *testing.T) {
 	exec.AsyncExec(func() {
 		<-trigger1
 		if count != 1 {
-			t.Errorf("expected count == 1, actual %d", count)
+			t.Errorf("expected ticket == 1, actual %d", count)
 		}
 		count = 2
 		close(completion1)
@@ -102,7 +123,7 @@ func TestExecOrder2(t *testing.T) {
 	exec.AsyncExec(func() {
 		<-trigger1
 		if !(count != 1) {
-			t.Errorf("expected count != 1, actual %d", count)
+			t.Errorf("expected ticket != 1, actual %d", count)
 		}
 		count = 2
 		close(completion1)
@@ -113,7 +134,7 @@ func TestExecOrder2(t *testing.T) {
 	exec.AsyncExec(func() {
 		<-trigger0
 		if !(count != 0) {
-			t.Errorf("expected count != 0, actual %d", count)
+			t.Errorf("expected ticket != 0, actual %d", count)
 		}
 		count = 1
 		close(completion0)
@@ -128,7 +149,7 @@ func TestExecOrder2(t *testing.T) {
 func TestExecOneAtATime(t *testing.T) {
 	var exec serialize.Executor
 	start := make(chan struct{})
-	count := 100
+	count := 1000
 	finished := make([]chan struct{}, count)
 	var running int
 	for i := 0; i < count; i++ {

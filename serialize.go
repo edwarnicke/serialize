@@ -24,39 +24,45 @@ import (
 	"sync/atomic"
 )
 
-const (
-	channelSize = 100
-)
-
 // Executor - a struct that can be used to guarantee exclusive, in order execution of functions.
 type Executor struct {
-	execCh chan func()
-	init   sync.Once
-	count  int32
+	sync.Map
+	ticket uint64
 }
 
 // AsyncExec - guarantees f() will be executed Exclusively and in the Order submitted.
 //        It immediately returns a channel that will be closed when f() has completed execution.
 func (e *Executor) AsyncExec(f func()) <-chan struct{} {
-	// Initialize *once*
-	e.init.Do(func() {
-		e.execCh = make(chan func(), channelSize)
-	})
-	// Start go routine if we don't have one
-	if atomic.AddInt32(&e.count, 1) == 1 {
+	// Get a ticket - your ticket is your place in line
+	ticket := atomic.AddUint64(&e.ticket, 1)
+	// If this is the first ticket, start the go routine to execute
+	if ticket == 1 {
 		go func() {
-			for g := range e.execCh {
-				g()
-				if atomic.AddInt32(&e.count, -1) == 0 {
+			for {
+				// Get the func() for the ticket we are processing
+				g, ok := e.Map.Load(ticket)
+				if !ok {
+					// If we don't have a func() for the ticket, spin lock till we do
+					continue
+				}
+				// Delete the func() from the Map
+				e.Map.Delete(ticket)
+				// Run the func()
+				g.(func())()
+				// If this is the last ticket, exit the go routine and reset the line by setting ticket to 0
+				if atomic.CompareAndSwapUint64(&e.ticket, ticket, 0) {
 					return
 				}
+				// process the next ticket
+				ticket++
 			}
 		}()
 	}
+	// Add func() to its place in the map
 	done := make(chan struct{})
-	e.execCh <- func() {
+	e.Map.Store(ticket, func() {
 		f()
 		close(done)
-	}
+	})
 	return done
 }
