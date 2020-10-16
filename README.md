@@ -60,3 +60,36 @@ func (m *myStruct) Update(s string) {
   })
 }
 ```
+
+
+## Warning about Deadlocks
+
+serialize.Executor is pretty resistant to most classes of deadlock mistakes.  You can nest calls to AsyncExec as far down
+as you'd like:
+
+```go
+func nested(executor *serialize.Executor) {
+    executor.AsyncExec(func(){
+        executor.AsyncExec(func(){
+            executor.AsyncExec(func(){
+            }
+        }
+    })
+}
+```
+
+will not deadlock no matter how far down you nest.
+
+However, care must be taken to not nest calls to AsyncExec if you block on the returned done channel.
+
+```go
+func deadlockNested(executor *serialize.Executor) {
+    executor.AsyncExec(func(){
+        <-executor.AsyncExec(func(){
+        
+        }
+    }
+}
+```
+
+will deadlock 100% of the time.  Do not block on done channels in nested calls to AsyncExec
