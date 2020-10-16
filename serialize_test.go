@@ -23,10 +23,13 @@ package serialize_test
 import (
 	"testing"
 
+	"go.uber.org/goleak"
+
 	"github.com/edwarnicke/serialize"
 )
 
 func TestASyncExec(t *testing.T) {
+	defer goleak.VerifyNone(t, goleak.IgnoreCurrent())
 	exec := serialize.Executor{}
 	count := 0
 	completion0 := make(chan struct{})
@@ -45,6 +48,7 @@ func TestASyncExec(t *testing.T) {
 }
 
 func TestSyncExec(t *testing.T) {
+	defer goleak.VerifyNone(t, goleak.IgnoreCurrent())
 	var exec serialize.Executor
 	count := 0
 	completion0 := make(chan struct{})
@@ -63,6 +67,7 @@ func TestSyncExec(t *testing.T) {
 }
 
 func TestExecOrder1(t *testing.T) {
+	defer goleak.VerifyNone(t, goleak.IgnoreCurrent())
 	var exec serialize.Executor
 	count := 0
 	trigger0 := make(chan struct{})
@@ -94,6 +99,7 @@ func TestExecOrder1(t *testing.T) {
 
 // Same as TestExecOrder1 but making sure out of order fails as expected
 func TestExecOrder2(t *testing.T) {
+	defer goleak.VerifyNone(t, goleak.IgnoreCurrent())
 	var exec serialize.Executor
 	count := 0
 
@@ -126,9 +132,10 @@ func TestExecOrder2(t *testing.T) {
 }
 
 func TestExecOneAtATime(t *testing.T) {
+	defer goleak.VerifyNone(t, goleak.IgnoreCurrent())
 	var exec serialize.Executor
 	start := make(chan struct{})
-	count := 100
+	count := 100000
 	finished := make([]chan struct{}, count)
 	var running int
 	for i := 0; i < count; i++ {
@@ -153,7 +160,28 @@ func TestExecOneAtATime(t *testing.T) {
 	}
 }
 
+func TestNestedAsyncDeadlock(t *testing.T) {
+	defer goleak.VerifyNone(t, goleak.IgnoreCurrent())
+	var exec serialize.Executor
+	startCh := make(chan struct{})
+	exec.AsyncExec(func() {
+		<-startCh
+		exec.AsyncExec(func() {
+			<-startCh
+			exec.AsyncExec(func() {
+				<-startCh
+			})
+		})
+	})
+	for i := 0; i < 1000; i++ {
+		exec.AsyncExec(func() {})
+	}
+	close(startCh)
+	<-exec.AsyncExec(func() {})
+}
+
 func BenchmarkExecutorAsync(b *testing.B) {
+	defer goleak.VerifyNone(b, goleak.IgnoreCurrent())
 	var exec serialize.Executor
 	for i := 0; i < b.N-1; i++ {
 		exec.AsyncExec(func() {})
@@ -162,6 +190,7 @@ func BenchmarkExecutorAsync(b *testing.B) {
 }
 
 func BenchmarkExecutorSync(b *testing.B) {
+	defer goleak.VerifyNone(b, goleak.IgnoreCurrent())
 	var exec serialize.Executor
 	for i := 0; i < b.N; i++ {
 		<-exec.AsyncExec(func() {})
