@@ -21,6 +21,7 @@
 package serialize_test
 
 import (
+	"github.com/stretchr/testify/require"
 	"sync"
 	"testing"
 
@@ -45,6 +46,7 @@ func TestDataRace(t *testing.T) {
 	}
 
 	wg.Wait()
+	require.Len(t, arr, 1000)
 }
 
 func TestASyncExec(t *testing.T) {
