@@ -21,9 +21,10 @@
 package serialize_test
 
 import (
-	"github.com/stretchr/testify/require"
 	"sync"
 	"testing"
+
+	"github.com/stretchr/testify/require"
 
 	"go.uber.org/goleak"
 
