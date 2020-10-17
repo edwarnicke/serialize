@@ -22,21 +22,55 @@ package serialize_test
 
 import (
 	"sync"
+	"sync/atomic"
 	"testing"
-
-	"github.com/stretchr/testify/require"
+	"time"
 
 	"go.uber.org/goleak"
 
 	"github.com/edwarnicke/serialize"
 )
 
-func TestDataRace(t *testing.T) {
+func TestAll(t *testing.T) {
+	defer goleak.VerifyNone(t, goleak.IgnoreCurrent())
+	exec := &serialize.Executor{}
+	t.Run("ASyncExec", func(t *testing.T) { ASyncExecTest(t, exec, 1) })
+	t.Run("SyncExec", func(t *testing.T) { SyncExecTest(t, exec, 1) })
+	t.Run("ExecOrder1", func(t *testing.T) { ExecOrder1Test(t, exec, 1000) })
+	t.Run("ExecOrder2", func(t *testing.T) { ExecOrder2Test(t, exec, 1000) })
+	t.Run("ExecOneAtATime", func(t *testing.T) { ExecOneAtATimeTest(t, exec, 1000) })
+	t.Run("DataRace", func(t *testing.T) { DataRaceTest(t, exec, 1000) })
+	t.Run("NestedAsyncDeadlock", func(t *testing.T) { NestedAsyncDeadlockTest(t, exec, 1000) })
+	t.Run("ConcurrentAsyncAccess", func(t *testing.T) { ConcurrentAsyncMapAccessTest(t, exec, 1000) })
+	t.Run("ConcurrentSyncAccess", func(t *testing.T) { ConcurrentSyncMapAccessTest(t, exec, 1000) })
+}
+
+func BenchmarkAll(b *testing.B) {
+	defer goleak.VerifyNone(b, goleak.IgnoreCurrent())
+	exec := &serialize.Executor{}
+	b.Run("Performance", func(b *testing.B) {
+		b.Run("ConcurrentAsyncMapAccess", func(b *testing.B) { ConcurrentAsyncMapAccessTest(b, exec, b.N) })
+		b.Run("ConcurrentSyncMapAccessTest", func(b *testing.B) { ConcurrentSyncMapAccessTest(b, exec, b.N) })
+		b.Run("ExecutorAsync", func(b *testing.B) { ExecutorAsyncBenchmark(b, exec, b.N) })
+		b.Run("ExecutorSync", func(b *testing.B) { ExecutorSyncBenchmark(b, exec, b.N) })
+	})
+	b.Run("Tests", func(b *testing.B) {
+		b.Run("ASyncExec", func(b *testing.B) { ASyncExecTest(b, exec, b.N) })
+		b.Run("SyncExec", func(b *testing.B) { SyncExecTest(b, exec, b.N) })
+		b.Run("ExecOrder1", func(b *testing.B) { ExecOrder1Test(b, exec, b.N) })
+		b.Run("ExecOrder2", func(b *testing.B) { ExecOrder2Test(b, exec, b.N) })
+		b.Run("ExecOneAtATime", func(b *testing.B) { ExecOneAtATimeTest(b, exec, b.N) })
+		b.Run("DataRace", func(b *testing.B) { DataRaceTest(b, exec, b.N) })
+		b.Run("NestedAsyncDeadlock", func(b *testing.B) { NestedAsyncDeadlockTest(b, exec, b.N) })
+	})
+}
+
+func DataRaceTest(t testing.TB, exec *serialize.Executor, count int) {
 	defer goleak.VerifyNone(t, goleak.IgnoreCurrent())
 	e := new(serialize.Executor)
 	var arr []int
 	wg := sync.WaitGroup{}
-	for i := 0; i < 1000; i++ {
+	for i := 0; i < count; i++ {
 		wg.Add(1)
 		go func(n int) {
 			e.AsyncExec(func() {
@@ -47,117 +81,105 @@ func TestDataRace(t *testing.T) {
 	}
 
 	wg.Wait()
-	require.Len(t, arr, 1000)
-}
-
-func TestASyncExec(t *testing.T) {
-	defer goleak.VerifyNone(t, goleak.IgnoreCurrent())
-	exec := serialize.Executor{}
-	count := 0
-	completion0 := make(chan struct{})
-	exec.AsyncExec(func() {
-		if count != 0 {
-			t.Errorf("expected count == 0, actual %d", count)
-		}
-		count = 1
-		close(completion0)
-	})
-	select {
-	case <-completion0:
-		t.Error("exec.AsyncExec did run to completion before returning.")
-	default:
+	if len(arr) != count {
+		t.Errorf("len(arr): %d expected %d", len(arr), count)
 	}
 }
 
-func TestSyncExec(t *testing.T) {
-	defer goleak.VerifyNone(t, goleak.IgnoreCurrent())
-	var exec serialize.Executor
-	count := 0
-	completion0 := make(chan struct{})
-	<-exec.AsyncExec(func() {
-		if count != 0 {
-			t.Errorf("expected count == 0, actual %d", count)
-		}
-		count = 1
-		close(completion0)
-	})
-	select {
-	case <-completion0:
-	default:
-		t.Error("exec.SyncExec did not run to completion before returning.")
+func ASyncExecTest(t testing.TB, exec *serialize.Executor, count int) {
+	for i := 0; i < count; i++ {
+		mu := sync.Mutex{}
+		mu.Lock()
+		done := make(chan struct{})
+		exec.AsyncExec(func() {
+			mu.Lock()
+			close(done)
+		})
+		mu.Unlock()
+		<-done
 	}
 }
 
-func TestExecOrder1(t *testing.T) {
-	defer goleak.VerifyNone(t, goleak.IgnoreCurrent())
-	var exec serialize.Executor
-	count := 0
-	trigger0 := make(chan struct{})
-	completion0 := make(chan struct{})
-	exec.AsyncExec(func() {
-		<-trigger0
-		if count != 0 {
-			t.Errorf("expected count == 0, actual %d", count)
+func SyncExecTest(t testing.TB, exec *serialize.Executor, count int) {
+	check := int32(0)
+	for i := 0; i < count; i++ {
+		j := int32(i)
+		<-exec.AsyncExec(func() {
+			atomic.AddInt32(&check, 1)
+		})
+		if atomic.LoadInt32(&check) == j {
+			t.Error("exec.SyncExec did not run to completion before returning.")
 		}
-		count = 1
-		close(completion0)
-	})
-	trigger1 := make(chan struct{})
-	completion1 := make(chan struct{})
-	exec.AsyncExec(func() {
-		<-trigger1
-		if count != 1 {
-			t.Errorf("expected count == 1, actual %d", count)
+	}
+}
+
+func ExecOrder1Test(t testing.TB, exec *serialize.Executor, count int) {
+	check := 0
+	trigger := make([]chan struct{}, count)
+	completion := make([]chan struct{}, len(trigger))
+	for i := 0; i < count; i++ {
+		j := i
+		trigger[j] = make(chan struct{})
+		completion[j] = make(chan struct{})
+		exec.AsyncExec(func() {
+			<-trigger[j]
+			if check != j {
+				t.Errorf("expected count == %d, actual %d", j, check)
+			}
+			check++
+			close(completion[j])
+		})
+	}
+	for i := len(trigger) - 1; i >= 0; i-- {
+		close(trigger[i])
+	}
+	for _, c := range completion {
+		select {
+		case <-c:
+		case <-time.After(500 * time.Millisecond):
+			t.Errorf("timeout waiting for completion")
 		}
-		count = 2
-		close(completion1)
-	})
-	// Let the second one start first
-	close(trigger1)
-	close(trigger0)
-	<-completion0
-	<-completion1
+	}
 }
 
 // Same as TestExecOrder1 but making sure out of order fails as expected
-func TestExecOrder2(t *testing.T) {
-	defer goleak.VerifyNone(t, goleak.IgnoreCurrent())
-	var exec serialize.Executor
-	count := 0
+func ExecOrder2Test(t testing.TB, exec *serialize.Executor, count int) {
+	for i := 0; i < count; i++ {
+		defer goleak.VerifyNone(t, goleak.IgnoreCurrent())
+		check := 0
 
-	trigger1 := make(chan struct{})
-	completion1 := make(chan struct{})
-	exec.AsyncExec(func() {
-		<-trigger1
-		if !(count != 1) {
-			t.Errorf("expected count != 1, actual %d", count)
-		}
-		count = 2
-		close(completion1)
-	})
+		trigger1 := make(chan struct{})
+		completion1 := make(chan struct{})
+		exec.AsyncExec(func() {
+			<-trigger1
+			if !(check != 1) {
+				t.Errorf("expected count != 1, actual %d", check)
+			}
+			check = 2
+			close(completion1)
+		})
 
-	trigger0 := make(chan struct{})
-	completion0 := make(chan struct{})
-	exec.AsyncExec(func() {
-		<-trigger0
-		if !(count != 0) {
-			t.Errorf("expected count != 0, actual %d", count)
-		}
-		count = 1
-		close(completion0)
-	})
-	// Let the second one start first
-	close(trigger1)
-	close(trigger0)
-	<-completion0
-	<-completion1
+		trigger0 := make(chan struct{})
+		completion0 := make(chan struct{})
+		exec.AsyncExec(func() {
+			<-trigger0
+			if !(check != 0) {
+				t.Errorf("expected count != 0, actual %d", check)
+			}
+			check = 1
+			close(completion0)
+		})
+		// Let the second one start first
+		close(trigger1)
+		close(trigger0)
+		<-completion0
+		<-completion1
+	}
 }
 
-func TestExecOneAtATime(t *testing.T) {
+func ExecOneAtATimeTest(t testing.TB, exec *serialize.Executor, count int) {
 	defer goleak.VerifyNone(t, goleak.IgnoreCurrent())
-	var exec serialize.Executor
 	start := make(chan struct{})
-	count := 100000
 	finished := make([]chan struct{}, count)
 	var running int
 	for i := 0; i < count; i++ {
@@ -182,9 +204,7 @@ func TestExecOneAtATime(t *testing.T) {
 	}
 }
 
-func TestNestedAsyncDeadlock(t *testing.T) {
-	defer goleak.VerifyNone(t, goleak.IgnoreCurrent())
-	var exec serialize.Executor
+func NestedAsyncDeadlockTest(t testing.TB, exec *serialize.Executor, count int) {
 	startCh := make(chan struct{})
 	exec.AsyncExec(func() {
 		<-startCh
@@ -195,26 +215,70 @@ func TestNestedAsyncDeadlock(t *testing.T) {
 			})
 		})
 	})
-	for i := 0; i < 1000; i++ {
+	for i := 0; i < count; i++ {
 		exec.AsyncExec(func() {})
 	}
 	close(startCh)
 	<-exec.AsyncExec(func() {})
 }
 
-func BenchmarkExecutorAsync(b *testing.B) {
-	defer goleak.VerifyNone(b, goleak.IgnoreCurrent())
-	var exec serialize.Executor
-	for i := 0; i < b.N-1; i++ {
+func ConcurrentAsyncMapAccessTest(t testing.TB, exec *serialize.Executor, count int) {
+	ConcurrentAccessTest(t, exec, count, false)
+}
+
+func ConcurrentSyncMapAccessTest(t testing.TB, exec *serialize.Executor, count int) {
+	ConcurrentAccessTest(t, exec, count, true)
+}
+
+func ConcurrentAccessTest(t testing.TB, exec *serialize.Executor, count int, synchronous bool) {
+	m := make(map[int]bool)
+	for i := 0; i < count; i++ {
+		j := i
+		done := exec.AsyncExec(func() {
+			if j > 0 && !m[j-1] {
+				t.Errorf("did not find expected value in map[%d]bool", j)
+			}
+			m[j] = true
+		})
+		if synchronous {
+			<-done
+		}
+	}
+	<-exec.AsyncExec(func() {})
+}
+
+func BaselineConcurrentAccess(b *testing.B) {
+	m := make(map[int]bool)
+	for i := 0; i < b.N; i++ {
+		j := i
+		if j > 0 && !m[j-1] {
+			b.Errorf("did not find expected value in map[%d]bool", j)
+		}
+		m[j] = true
+	}
+}
+
+func BaselineSyncMapReadWrite(b *testing.B) {
+	m := sync.Map{}
+	for i := 0; i < b.N; i++ {
+		j := i
+		_, ok := m.Load(j - 1)
+		if j > 0 && !ok {
+			b.Errorf("did not find expected value in map[%d]bool", j)
+		}
+		m.Store(j, true)
+	}
+}
+
+func ExecutorAsyncBenchmark(b testing.TB, exec *serialize.Executor, count int) {
+	for i := 0; i < count-1; i++ {
 		exec.AsyncExec(func() {})
 	}
 	<-exec.AsyncExec(func() {})
 }
 
-func BenchmarkExecutorSync(b *testing.B) {
-	defer goleak.VerifyNone(b, goleak.IgnoreCurrent())
-	var exec serialize.Executor
-	for i := 0; i < b.N; i++ {
+func ExecutorSyncBenchmark(b testing.TB, exec *serialize.Executor, count int) {
+	for i := 0; i < count; i++ {
 		<-exec.AsyncExec(func() {})
 	}
 }
