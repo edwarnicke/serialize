@@ -21,12 +21,31 @@
 package serialize_test
 
 import (
+	"sync"
 	"testing"
 
 	"go.uber.org/goleak"
 
 	"github.com/edwarnicke/serialize"
 )
+
+func TestDataRace(t *testing.T) {
+	defer goleak.VerifyNone(t, goleak.IgnoreCurrent())
+	e := new(serialize.Executor)
+	var arr []int
+	wg := sync.WaitGroup{}
+	for i := 0; i < 1000; i++ {
+		wg.Add(1)
+		go func(n int) {
+			e.AsyncExec(func() {
+				arr = append(arr, n)
+				wg.Done()
+			})
+		}(i)
+	}
+
+	wg.Wait()
+}
 
 func TestASyncExec(t *testing.T) {
 	defer goleak.VerifyNone(t, goleak.IgnoreCurrent())
