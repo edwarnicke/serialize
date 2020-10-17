@@ -25,7 +25,7 @@ import (
 )
 
 const (
-	channelSize = 256 // 256 is chosen because 256*8 = 2kb, or about the cost of a go routing
+	channelSize = 256 // 256 is chosen because 256*8 = 2kb, or about the cost of a go routine
 )
 
 // Executor - a struct that can be used to guarantee exclusive, in order execution of functions.
@@ -43,6 +43,30 @@ func (e *Executor) AsyncExec(f func()) <-chan struct{} {
 	e.init.Do(func() {
 		e.orderCh = make(chan func(), channelSize)
 	})
+	// Start go routine if we don't have one
+	if atomic.AddInt32(&e.count, 1) == 1 {
+		result := make(chan struct{})
+		go func() {
+			f()
+			close(result)
+			if atomic.AddInt32(&e.count, -1) == 0 {
+				return
+			}
+			for {
+				e.bufferMutex.Lock()
+				buf := e.buffer[0:]
+				e.buffer = e.buffer[len(e.buffer):]
+				e.bufferMutex.Unlock()
+				for _, f := range buf {
+					f()
+				}
+				if len(buf) > 0 && atomic.AddInt32(&e.count, -int32(len(buf))) == 0 {
+					return
+				}
+			}
+		}()
+		return result
+	}
 	result := make(chan struct{})
 	e.orderCh <- func() {
 		f()
@@ -51,20 +75,5 @@ func (e *Executor) AsyncExec(f func()) <-chan struct{} {
 	e.bufferMutex.Lock()
 	e.buffer = append(e.buffer, <-e.orderCh)
 	e.bufferMutex.Unlock()
-	// Start go routine if we don't have one
-	if atomic.AddInt32(&e.count, 1) == 1 {
-		go func() {
-			for {
-				e.bufferMutex.Lock()
-				f := e.buffer[0]
-				e.buffer = e.buffer[1:]
-				e.bufferMutex.Unlock()
-				f()
-				if atomic.AddInt32(&e.count, -1) == 0 {
-					return
-				}
-			}
-		}()
-	}
 	return result
 }
