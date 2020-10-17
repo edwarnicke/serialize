@@ -24,9 +24,13 @@ import (
 	"sync/atomic"
 )
 
+const (
+	channelSize = 256 // 256 is chosen because 256*8 = 2kb, or about the cost of a go routing
+)
+
 // Executor - a struct that can be used to guarantee exclusive, in order execution of functions.
 type Executor struct {
-	execCh      chan func()
+	orderCh     chan func()
 	buffer      []func()
 	bufferMutex sync.Mutex
 	init        sync.Once
@@ -37,15 +41,15 @@ type Executor struct {
 //        It immediately returns a channel that will be closed when f() has completed execution.
 func (e *Executor) AsyncExec(f func()) <-chan struct{} {
 	e.init.Do(func() {
-		e.execCh = make(chan func(), 1)
+		e.orderCh = make(chan func(), channelSize)
 	})
 	result := make(chan struct{})
-	e.execCh <- func() {
+	e.orderCh <- func() {
 		f()
 		close(result)
 	}
 	e.bufferMutex.Lock()
-	e.buffer = append(e.buffer, <-e.execCh)
+	e.buffer = append(e.buffer, <-e.orderCh)
 	e.bufferMutex.Unlock()
 	// Start go routine if we don't have one
 	if atomic.AddInt32(&e.count, 1) == 1 {
