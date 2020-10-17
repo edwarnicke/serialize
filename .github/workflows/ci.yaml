@@ -14,27 +14,25 @@ jobs:
         run: pip install --user yamllint
       - name: Run yamllint
         run: ~/.local/bin/yamllint -c .yamllint.yml --strict .
-  build:
-    name: build
-    runs-on: ubuntu-latest
+  build-test-bench:
+    name: build and test and bench
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        os: [ubuntu-latest]
     steps:
-      - uses: actions/checkout@v2
-      - uses: actions/setup-go@v1
+      - name: Check out code
+        uses: actions/checkout@v2
+      - name: Setup Go
+        uses: actions/setup-go@v1
         with:
           go-version: 1.15.3
-      - run: |
-          go build -race  ./...
-  test:
-    name: test
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v2
-      - uses: actions/setup-go@v1
-        with:
-          go-version: 1.15.3
-      - name: Run tests
-        run: |
-          go test -race -short ./...
+      - name: Build
+        run: go build -race  ./...
+      - name: Test
+        run: go test -race ./...
+      - name: Bench
+        run: go test -run=XXX -bench=.
   golangci-lint:
     name: golangci-lint
     runs-on: ubuntu-latest
