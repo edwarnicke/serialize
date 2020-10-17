@@ -20,60 +20,86 @@
 package serialize
 
 import (
-	"sync"
+	"runtime"
 	"sync/atomic"
 )
 
-const (
-	channelSize = 256 // 256 is chosen because 256*8 = 2kb, or about the cost of a go routine
-)
+type job struct {
+	f    func()
+	done chan struct{}
+	next atomic.Value
+}
 
 // Executor - a struct that can be used to guarantee exclusive, in order execution of functions.
 type Executor struct {
-	orderCh     chan func()
-	buffer      []func()
-	bufferMutex sync.Mutex
-	init        sync.Once
-	count       int32
+	ticket uintptr
+	queued uintptr
+	head   *job
+	tail   atomic.Value
 }
 
 // AsyncExec - guarantees f() will be executed Exclusively and in the Order submitted.
 //        It immediately returns a channel that will be closed when f() has completed execution.
 func (e *Executor) AsyncExec(f func()) <-chan struct{} {
-	e.init.Do(func() {
-		e.orderCh = make(chan func(), channelSize)
-	})
-	// Start go routine if we don't have one
-	if atomic.AddInt32(&e.count, 1) == 1 {
-		result := make(chan struct{})
-		go func() {
-			f()
-			close(result)
-			if atomic.AddInt32(&e.count, -1) == 0 {
-				return
-			}
-			for {
-				e.bufferMutex.Lock()
-				buf := e.buffer[0:]
-				e.buffer = e.buffer[len(e.buffer):]
-				e.bufferMutex.Unlock()
-				for _, f := range buf {
-					f()
-				}
-				if len(buf) > 0 && atomic.AddInt32(&e.count, -int32(len(buf))) == 0 {
-					return
-				}
-			}
-		}()
-		return result
+	ticket := atomic.AddUintptr(&e.ticket, 1)
+	if ticket == 0 {
+		panic("AsyncExec - ticket == 0 indicates we have deadlocked by wrapping the uintptr all the way back around to 0")
 	}
-	result := make(chan struct{})
-	e.orderCh <- func() {
-		f()
-		close(result)
+
+	newJob := &job{
+		f:    f,
+		done: make(chan struct{}),
 	}
-	e.bufferMutex.Lock()
-	e.buffer = append(e.buffer, <-e.orderCh)
-	e.bufferMutex.Unlock()
-	return result
+
+	// Wait for our turn to queue our job
+	for atomic.LoadUintptr(&e.queued) != ticket-1 {
+		runtime.Gosched()
+	}
+	tail, _ := e.tail.Load().(*job)
+	if tail != nil {
+		tail.next.Store(newJob)
+	}
+	e.tail.Store(newJob)
+
+	// Let the next invoker have their turn
+	if atomic.AddUintptr(&e.queued, 1) != ticket {
+		panic("e.queued does not match ticket on equeue")
+	}
+
+	if ticket == 1 {
+		go e.process(ticket, newJob)
+	}
+	return newJob.done
+}
+
+func (e *Executor) process(ticket uintptr, newJob *job) {
+	// Note, as e.head is *only* ever accessed by the processing job
+	// and there is *only* ever one processing job at time, no need
+	// to wrap access in atomics
+	e.head = newJob
+	for {
+		if ticket = e.execute(ticket, e.head); ticket == 0 {
+			return
+		}
+	}
+}
+
+func (e *Executor) execute(ticket uintptr, j *job) uintptr {
+	// Run the job
+	j.f()
+	close(j.done)
+	// If this is the last ticket issued, reset the ticket counter
+	if atomic.CompareAndSwapUintptr(&e.ticket, ticket, 0) {
+		// Reset the queued counter too.
+		atomic.CompareAndSwapUintptr(&e.queued, ticket, 0)
+		return 0
+	}
+
+	// Spinlock on the queued counter catching up to the ticket
+	// to insure that j.next is non-nil
+	for atomic.LoadUintptr(&e.queued) <= ticket {
+		runtime.Gosched()
+	}
+	e.head, _ = j.next.Load().(*job)
+	return ticket + 1
 }

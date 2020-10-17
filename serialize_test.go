@@ -54,6 +54,10 @@ func BenchmarkAll(b *testing.B) {
 		b.Run("ExecutorAsync", func(b *testing.B) { ExecutorAsyncBenchmark(b, exec, b.N) })
 		b.Run("ExecutorSync", func(b *testing.B) { ExecutorSyncBenchmark(b, exec, b.N) })
 	})
+	b.Run("Baselines", func(b *testing.B) {
+		b.Run("BaselineConcurrentAccess", func(b *testing.B) { BaselineConcurrentAccess(b) })
+		b.Run("BaselineSyncMapReadWrite", func(b *testing.B) { BaselineSyncMapReadWrite(b) })
+	})
 	b.Run("Tests", func(b *testing.B) {
 		b.Run("ASyncExec", func(b *testing.B) { ASyncExecTest(b, exec, b.N) })
 		b.Run("SyncExec", func(b *testing.B) { SyncExecTest(b, exec, b.N) })
