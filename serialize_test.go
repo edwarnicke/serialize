@@ -63,6 +63,10 @@ func BenchmarkAll(b *testing.B) {
 		b.Run("DataRace", func(b *testing.B) { DataRaceTest(b, exec, b.N) })
 		b.Run("NestedAsyncDeadlock", func(b *testing.B) { NestedAsyncDeadlockTest(b, exec, b.N) })
 	})
+	b.Run("Baselines", func(b *testing.B) {
+		b.Run("BaselineConcurrentAccess", BaselineConcurrentAccess)
+		b.Run("BaselineSyncMapReadWrite", BaselineSyncMapReadWrite)
+	})
 }
 
 func DataRaceTest(t testing.TB, exec *serialize.Executor, count int) {
