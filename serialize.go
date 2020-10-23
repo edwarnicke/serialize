@@ -25,13 +25,9 @@ import (
 	"sync/atomic"
 )
 
-const (
-	channelSize = 256 // 256 is chosen because 256*8 = 2kb, or about the cost of a go routine
-)
-
 type job struct {
-	f func()
-	done chan struct{}
+	f      func()
+	done   chan struct{}
 	ticket uintptr
 }
 
@@ -40,55 +36,69 @@ type Executor struct {
 	buffer []*job
 	mu     sync.Mutex
 	ticket uintptr
-	sorted int
 }
 
 // AsyncExec - guarantees f() will be executed Exclusively and in the Order submitted.
 //        It immediately returns a channel that will be closed when f() has completed execution.
 func (e *Executor) AsyncExec(f func()) <-chan struct{} {
-	ticket := atomic.AddUintptr(&e.ticket,1)
+	// Get a ticket.  The ticket established absolute order.
+	ticket := atomic.AddUintptr(&e.ticket, 1)
 	if ticket == 0 {
 		panic("ticket == 0 - you've overrun a uintptr counter of jobs and are probably deadlocked")
 	}
+	// Create the job
 	jb := &job{
-		f: f,
-		done: make(chan struct{}),
+		f:      f,
+		done:   make(chan struct{}),
 		ticket: ticket,
 	}
+	// The first ticket fires off processing
 	if ticket == 1 {
-		go e.process()
+		go e.process(jb)
+		return jb.done
 	}
+	// queue up the job in the buffer (note: buffer order itself does not guarantee order, job.ticket does)
 	e.mu.Lock()
 	e.buffer = append(e.buffer, jb)
 	e.mu.Unlock()
 	return jb.done
 }
 
-func (e * Executor) process() {
-	ticket := uintptr(1)
+func (e *Executor) process(jb *job) {
+	// Run the first job inline with processing.  This is a performance optimization
+	jb.f()
+	close(jb.done)
+	// If there are no more jobs, exit
+	if atomic.CompareAndSwapUintptr(&e.ticket, 1, 0) {
+		return
+	}
+	// Starting from ticket == 2 (because we processed ticket == 1 already)
+	ticket := uintptr(2)
 	var buf []*job
 	for {
+		// Drain the buffer
 		e.mu.Lock()
-		buf = append(buf,e.buffer[0:]...)
+		buf = append(buf, e.buffer[0:]...)
 		e.buffer = e.buffer[len(e.buffer):]
 		e.mu.Unlock()
+		// Sort the buffer
 		sort.SliceStable(buf, func(i, j int) bool {
 			return buf[i].ticket < buf[j].ticket
 		})
 		for len(buf) > 0 {
-			jb := buf[0]
-			if jb.ticket == ticket {
-				jb.f()
-				close(jb.done)
-				if atomic.CompareAndSwapUintptr(&e.ticket,ticket,0) {
+			// If buf[0].ticket == ticket (the next ticket to process), process it
+			if buf[0].ticket == ticket {
+				buf[0].f()
+				close(buf[0].done)
+				if atomic.CompareAndSwapUintptr(&e.ticket, ticket, 0) {
 					return
 				}
 				buf = buf[1:]
 				ticket++
 				continue
 			}
+			// If buf[0] != ticket, we have yet to receive the next job and need to drain the buffer again
 			break
 		}
 	}
 }
-
