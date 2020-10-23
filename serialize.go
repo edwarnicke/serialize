@@ -20,6 +20,7 @@
 package serialize
 
 import (
+	"sort"
 	"sync"
 	"sync/atomic"
 )
@@ -28,52 +29,66 @@ const (
 	channelSize = 256 // 256 is chosen because 256*8 = 2kb, or about the cost of a go routine
 )
 
+type job struct {
+	f func()
+	done chan struct{}
+	ticket uintptr
+}
+
 // Executor - a struct that can be used to guarantee exclusive, in order execution of functions.
 type Executor struct {
-	orderCh     chan func()
-	buffer      []func()
-	bufferMutex sync.Mutex
-	init        sync.Once
-	count       int32
+	buffer []*job
+	mu     sync.Mutex
+	ticket uintptr
+	sorted int
 }
 
 // AsyncExec - guarantees f() will be executed Exclusively and in the Order submitted.
 //        It immediately returns a channel that will be closed when f() has completed execution.
 func (e *Executor) AsyncExec(f func()) <-chan struct{} {
-	e.init.Do(func() {
-		e.orderCh = make(chan func(), channelSize)
-	})
-	// Start go routine if we don't have one
-	if atomic.AddInt32(&e.count, 1) == 1 {
-		result := make(chan struct{})
-		go func() {
-			f()
-			close(result)
-			if atomic.AddInt32(&e.count, -1) == 0 {
-				return
-			}
-			for {
-				e.bufferMutex.Lock()
-				buf := e.buffer[0:]
-				e.buffer = e.buffer[len(e.buffer):]
-				e.bufferMutex.Unlock()
-				for _, f := range buf {
-					f()
-				}
-				if len(buf) > 0 && atomic.AddInt32(&e.count, -int32(len(buf))) == 0 {
+	ticket := atomic.AddUintptr(&e.ticket,1)
+	if ticket == 0 {
+		panic("ticket == 0 - you've overrun a uintptr counter of jobs and are probably deadlocked")
+	}
+	jb := &job{
+		f: f,
+		done: make(chan struct{}),
+		ticket: ticket,
+	}
+	if ticket == 1 {
+		go e.process()
+	}
+	e.mu.Lock()
+	e.buffer = append(e.buffer, jb)
+	e.mu.Unlock()
+	return jb.done
+}
+
+func (e * Executor) process() {
+	ticket := uintptr(1)
+	var buf []*job
+	for {
+		e.mu.Lock()
+		buf = append(buf,e.buffer[0:]...)
+		e.buffer = e.buffer[len(e.buffer):]
+		e.mu.Unlock()
+		sort.SliceStable(buf, func(i, j int) bool {
+			return buf[i].ticket < buf[j].ticket
+		})
+		for len(buf) > 0 {
+			jb := buf[0]
+			if jb.ticket == ticket {
+				jb.f()
+				close(jb.done)
+				if atomic.CompareAndSwapUintptr(&e.ticket,ticket,0) {
 					return
 				}
+				buf = buf[1:]
+				ticket++
+				continue
 			}
-		}()
-		return result
+			break
+		}
 	}
-	result := make(chan struct{})
-	e.orderCh <- func() {
-		f()
-		close(result)
-	}
-	e.bufferMutex.Lock()
-	e.buffer = append(e.buffer, <-e.orderCh)
-	e.bufferMutex.Unlock()
-	return result
 }
+
