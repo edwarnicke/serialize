@@ -20,7 +20,6 @@
 package serialize
 
 import (
-	"sort"
 	"sync"
 	"sync/atomic"
 )
@@ -82,23 +81,20 @@ func (e *Executor) process(jb *job) {
 		e.buffer = e.buffer[len(e.buffer):]
 		e.mu.Unlock()
 		// Sort the buffer
-		sort.SliceStable(buf, func(i, j int) bool {
-			return buf[i].ticket < buf[j].ticket
-		})
-		for len(buf) > 0 {
-			// If buf[0].ticket == ticket (the next ticket to process), process it
-			if buf[0].ticket == ticket {
-				buf[0].f()
-				close(buf[0].done)
+		for i := 0; i < len(buf); {
+			if buf[i].ticket == ticket {
+				buf[i].f()
+				close(buf[i].done)
 				if atomic.CompareAndSwapUintptr(&e.ticket, ticket, 0) {
 					return
 				}
+				buf[i] = buf[0]
 				buf = buf[1:]
 				ticket++
+				i = 0
 				continue
 			}
-			// If buf[0] != ticket, we have yet to receive the next job and need to drain the buffer again
-			break
+			i++
 		}
 	}
 }
